@@ -17,77 +17,102 @@ import java.util.*;
 public class SkalkaNetherowa extends JavaPlugin implements Listener, CommandExecutor {
 
     private final Map<UUID, Integer> crystalHP = new HashMap<>();
-    private final Map<UUID, UUID> crystalToGuard = new HashMap<>(); // Kryształ -> ID moba (uproszczone do 1 fali)
     private final Set<UUID> activeGuards = new HashSet<>();
+    private final Map<UUID, Location> respawnLocations = new HashMap<>();
     private final Random random = new Random();
 
     @Override
     public void onEnable() {
-        getCommand("skalka").setExecutor(this);
+        // Rejestracja komendy i eventów
+        if (getCommand("skalka") != null) {
+            getCommand("skalka").setExecutor(this);
+        }
         getServer().getPluginManager().registerEvents(this, this);
+        
+        // Tworzenie folderu pluginu
         saveDefaultConfig();
+        getLogger().info("Plugin SkalkaNetherowa zostal wlaczony!");
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
-        if (!(sender instanceof Player player) || !player.isOp()) return true;
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("Tylko gracz moze uzywac tej komendy!");
+            return true;
+        }
+
+        if (!player.isOp()) {
+            player.sendMessage("§cNie masz uprawnien!");
+            return true;
+        }
 
         if (args.length > 0 && args[0].equalsIgnoreCase("set")) {
-            spawnCrystal(player.getLocation());
-            player.sendMessage("§a§l[!] §7Postawiono stałą skałkę netherową!");
+            Location loc = player.getLocation();
+            spawnCrystal(loc);
+            player.sendMessage("§a§l[!] §7Skałka zostala utworzona w Twojej pozycji!");
+            return true;
         }
+        
+        player.sendMessage("§eUzyj: /skalka set");
         return true;
     }
 
     private void spawnCrystal(Location loc) {
+        if (loc.getWorld() == null) return;
+        
         EnderCrystal crystal = (EnderCrystal) loc.getWorld().spawnEntity(loc, EntityType.ENDER_CRYSTAL);
         crystal.setShowingBottom(true);
         crystal.setCustomName("§c§lSkałka Netherowa");
         crystal.setCustomNameVisible(true);
-        crystalHP.put(crystal.getUniqueId(), 4);
+        
+        UUID id = crystal.getUniqueId();
+        crystalHP.put(id, 4);
+        respawnLocations.put(id, loc.clone());
     }
 
     @EventHandler
     public void onCrystalHit(EntityDamageByEntityEvent event) {
         if (!(event.getEntity() instanceof EnderCrystal crystal)) return;
-        event.setCancelled(true); // Blokada wybuchu
+        
+        // Sprawdzamy czy to nasza skałka (czy jest w mapie HP)
+        if (!crystalHP.containsKey(crystal.getUniqueId())) return;
+
+        event.setCancelled(true);
 
         if (!(event.getDamager() instanceof Player player)) return;
 
-        UUID id = crystal.getUniqueId();
-        if (!crystalHP.containsKey(id)) return;
-
-        // Sprawdzanie czy żyją moby
         if (hasLivingGuards()) {
-            player.sendMessage("§c§l[!] §7Pokonaj strażników, aby dalej niszczyć skałkę!");
+            player.sendMessage("§c§l[!] §7Musisz najpierw zabic straznikow!");
             return;
         }
 
-        int currentHP = crystalHP.get(id) - 1;
-        crystalHP.put(id, currentHP);
+        UUID id = crystal.getUniqueId();
+        int hp = crystalHP.get(id) - 1;
+        crystalHP.put(id, hp);
 
-        if (currentHP <= 0) {
+        if (hp <= 0) {
             spawnGuards(crystal.getLocation());
-            player.sendMessage("§6§l[!] §ePojawili się strażnicy! Pokonaj ich, by rozbić skałkę!");
-            // Wizualny efekt "uśpienia" kryształu
-            crystal.setBeamTarget(crystal.getLocation().clone().add(0, -1, 0)); 
+            player.sendMessage("§6§l[!] §eStraznicy sie pojawili! Pokonaj ich!");
         } else {
-            player.sendMessage("§e§l[!] §7Skałka traci moc... §6(HP: " + currentHP + "/4)");
-            crystal.getWorld().playEffect(crystal.getLocation(), Effect.STEP_SOUND, Material.NETHERRACK);
+            player.sendMessage("§e§l[!] §7Skałka: §6" + hp + "§7/4 HP");
+            crystal.getWorld().spawnParticle(Particle.BLOCK_CRACK, crystal.getLocation().add(0, 1, 0), 20, Bukkit.createBlockData(Material.NETHERRACK));
         }
     }
 
     private void spawnGuards(Location loc) {
         for (int i = 0; i < 3; i++) {
             EntityType type = (random.nextBoolean()) ? EntityType.WITHER_SKELETON : EntityType.BLAZE;
-            Monster m = (Monster) loc.getWorld().spawnEntity(loc.clone().add(random.nextDouble()*2, 1, random.nextDouble()*2), type);
-            m.setCustomName("§4Strażnik Skałki");
+            Monster m = (Monster) loc.getWorld().spawnEntity(loc.clone().add(random.nextDouble()*2, 0.5, random.nextDouble()*2), type);
+            m.setCustomName("§4Straznik Skalki");
             activeGuards.add(m.getUniqueId());
         }
     }
 
     private boolean hasLivingGuards() {
-        activeGuards.removeIf(uuid -> Bukkit.getEntity(uuid) == null || Bukkit.getEntity(uuid).isDead());
+        activeGuards.removeIf(uuid -> {
+            Entity e = Bukkit.getEntity(uuid);
+            return e == null || e.isDead();
+        });
         return !activeGuards.isEmpty();
     }
 
@@ -97,46 +122,48 @@ public class SkalkaNetherowa extends JavaPlugin implements Listener, CommandExec
             activeGuards.remove(event.getEntity().getUniqueId());
             
             if (activeGuards.isEmpty()) {
-                // Gdy ostatni mob zginie, szukamy najbliższego kryształu do "rozbicia"
-                for (Entity e : event.getEntity().getNearbyEntities(10, 10, 10)) {
-                    if (e instanceof EnderCrystal crystal && crystalHP.containsKey(e.getUniqueId())) {
-                        giveRewardAndDestroy(crystal);
-                        break;
-                    }
-                }
+                // Szukamy kryształu w pobliżu miejsca śmierci ostatniego moba
+                event.getEntity().getNearbyEntities(10, 10, 10).stream()
+                    .filter(e -> e instanceof EnderCrystal && crystalHP.containsKey(e.getUniqueId()))
+                    .map(e -> (EnderCrystal) e)
+                    .findFirst()
+                    .ifPresent(this::giveRewardAndDestroy);
             }
         }
     }
 
     private void giveRewardAndDestroy(EnderCrystal crystal) {
         Location loc = crystal.getLocation();
-        
-        // --- DROP SYSTEM ---
-        List<ItemStack> drops = new ArrayList<>();
-        drops.add(new ItemStack(Material.GHAST_TEAR, random.nextInt(2) + 1));
-        drops.add(new ItemStack(Material.DIAMOND, random.nextInt(3) + 1));
-        drops.add(new ItemStack(Material.IRON_INGOT, random.nextInt(5) + 3));
-        drops.add(new ItemStack(Material.GOLD_INGOT, random.nextInt(5) + 3));
-        drops.add(new ItemStack(Material.BLAZE_ROD, random.nextInt(3) + 1));
-        drops.add(new ItemStack(Material.NETHER_WART, random.nextInt(4) + 2));
+        Location respawnLoc = respawnLocations.get(crystal.getUniqueId());
 
-        // Rzadkie dropy
-        if (random.nextDouble() < 0.20) drops.add(new ItemStack(Material.GOLDEN_APPLE, 1));
-        if (random.nextDouble() < 0.15) drops.add(new ItemStack(Material.WITHER_SKELETON_SKULL, 1));
-        if (random.nextDouble() < 0.05) drops.add(new ItemStack(Material.NETHERITE_SCRAP, 1));
+        // Drop
+        dropItems(loc);
 
-        for (ItemStack is : drops) {
-            loc.getWorld().dropItemNaturally(loc, is);
-        }
-
+        // Efekty
         loc.getWorld().spawnParticle(Particle.EXPLOSION_HUGE, loc, 1);
-        loc.getWorld().playSound(loc, Sound.ENTITY_IRON_GOLEM_DEATH, 1.0f, 0.5f);
+        loc.getWorld().playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 0.8f);
 
-        crystal.remove();
         crystalHP.remove(crystal.getUniqueId());
+        respawnLocations.remove(crystal.getUniqueId());
+        crystal.remove();
 
-        // Odrodzenie za 30 minut (1800 sekund * 20 ticków)
-        Bukkit.getScheduler().runTaskLater(this, () -> spawnCrystal(loc), 36000L);
-        Bukkit.broadcastMessage("§6§l[Skałka] §eZostała rozbita! Kolejna pojawi się za 30 minut.");
+        Bukkit.broadcastMessage("§6§l[Skałka] §eZniszczona! Odrodzi sie za 30 minut.");
+
+        // Respawn po 30 min (1800 sekund)
+        Bukkit.getScheduler().runTaskLater(this, () -> spawnCrystal(respawnLoc), 20L * 1800L);
+    }
+
+    private void dropItems(Location loc) {
+        World w = loc.getWorld();
+        w.dropItemNaturally(loc, new ItemStack(Material.GHAST_TEAR, random.nextInt(2) + 1));
+        w.dropItemNaturally(loc, new ItemStack(Material.DIAMOND, random.nextInt(2) + 1));
+        w.dropItemNaturally(loc, new ItemStack(Material.IRON_INGOT, 4));
+        w.dropItemNaturally(loc, new ItemStack(Material.GOLD_INGOT, 4));
+        w.dropItemNaturally(loc, new ItemStack(Material.BLAZE_ROD, 2));
+        w.dropItemNaturally(loc, new ItemStack(Material.NETHER_WART, 3));
+
+        if (random.nextDouble() < 0.20) w.dropItemNaturally(loc, new ItemStack(Material.GOLDEN_APPLE));
+        if (random.nextDouble() < 0.10) w.dropItemNaturally(loc, new ItemStack(Material.WITHER_SKELETON_SKULL));
+        if (random.nextDouble() < 0.05) w.dropItemNaturally(loc, new ItemStack(Material.NETHERITE_SCRAP));
     }
 }
