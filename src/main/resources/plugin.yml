@@ -1,8 +1,8 @@
 name: SkalkaNetherowa
 version: 1.0
 main: pl.twojserwer.skalki.SkalkaNetherowa
-api-version: 1.19 # Lub Twoja wersja serwera
+api-version: 1.13
 commands:
   skalka:
-    description: Komenda do ustawiania skałek netherowych.
+    description: Komenda główna pluginu
     permission: skalka.admin
